@@ -1834,13 +1834,25 @@
                 noise.stop(audioCtx.currentTime + 0.05);
             };
 
+            const stopFan = () => {
+                if (gainNode) {
+                    gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
+                    setTimeout(() => {
+                        if (fanNode) {
+                            try { fanNode.stop(); } catch (e) { }
+                        }
+                    }, 1500);
+                }
+            };
+
             return {
                 boot: () => {
                     if (audioCtx.state === 'suspended') audioCtx.resume();
                     playClick();      // The physical switch
                     startFan();       // The BA440 air rushing
                     startDriveWhine(); // The RF72 platters spinning up
-                }
+                },
+                stopFan
             };
         })();
 
