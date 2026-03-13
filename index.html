@@ -1514,6 +1514,75 @@
                 width: 100%;
             }
         }
+        /* Retro Sliders */
+        .volume-controls {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px dashed rgba(17, 43, 26, 0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .slider-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .slider-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.65rem;
+            color: var(--lcd-text);
+            font-weight: bold;
+        }
+
+        .slider-ui {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 0.75rem;
+            color: var(--lcd-text);
+        }
+
+        .retro-slider {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        .retro-slider:focus {
+            outline: none;
+        }
+
+        /* Track */
+        .retro-slider::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 8px;
+            background: rgba(17, 43, 26, 0.1);
+            border: 1px solid rgba(17, 43, 26, 0.4);
+            border-radius: 0;
+        }
+
+        /* Thumb */
+        .retro-slider::-webkit-slider-thumb {
+            height: 18px;
+            width: 10px;
+            background: var(--lcd-text);
+            border: 1px solid #9fbe9f;
+            -webkit-appearance: none;
+            margin-top: -6px; /* center thumb on track */
+            box-shadow: 2px 2px 0px rgba(0, 0, 0, 0.2);
+        }
+
+        .slider-val {
+            min-width: 25px;
+            text-align: right;
+        }
     </style>
 </head>
 
@@ -1637,6 +1706,30 @@
                             KA670-AA/BA CPU · MS670-BA/CA MEMORY · Q22-BUS BACKPLANE · DSSI STORAGE BUS<br>
                             CONNECT VT220/VT320 TERMINAL FOR CONSOLE OUTPUT (9600/8N1)<br>
                             FATAL HALT ON CPU/MEM ERROR → CHECK RIBBON CABLE / CPU MODULE / H3604
+                            <div class="volume-controls">
+                                <div class="slider-group">
+                                    <div class="slider-header">
+                                        <span>FAN VOLUME</span>
+                                        <span id="fanVolLabel">100%</span>
+                                    </div>
+                                    <div class="slider-ui">
+                                        <span>0%</span>
+                                        <input type="range" class="retro-slider" id="fanSlider" min="0" max="100" value="100" oninput="updateVolume('fan', this.value)">
+                                        <span>100%</span>
+                                    </div>
+                                </div>
+                                <div class="slider-group">
+                                    <div class="slider-header">
+                                        <span>HD VOLUME</span>
+                                        <span id="hdVolLabel">100%</span>
+                                    </div>
+                                    <div class="slider-ui">
+                                        <span>0%</span>
+                                        <input type="range" class="retro-slider" id="hdSlider" min="0" max="100" value="100" oninput="updateVolume('hd', this.value)">
+                                        <span>100%</span>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                     </div>
@@ -1719,8 +1812,13 @@
     <script>
         const AudioEngine = (() => {
             const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            let fanNode = null;
-            let gainNode = null;
+            let fanSource = null;
+            let fanGain = null;
+            let motorSource = null;
+            let motorGain = null;
+            
+            let userFanVol = 1.0;
+            let userHdVol = 1.0;
 
             // Synthesize a mechanical "Click"
             const playClick = () => {
@@ -1758,75 +1856,67 @@
                     b4 = 0.55000 * b4 + white * 0.5329522;
                     b5 = -0.7616 * b5 - white * 0.0168980;
                     output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
-                    output[i] *= 0.11; // volume adjustment
+                    output[i] *= 0.11; // gain adjustment
                     b6 = white * 0.115926;
                 }
 
-                fanNode = audioCtx.createBufferSource();
-                fanNode.buffer = noiseBuffer;
-                fanNode.loop = true;
+                fanSource = audioCtx.createBufferSource();
+                fanSource.buffer = noiseBuffer;
+                fanSource.loop = true;
 
                 const filter = audioCtx.createBiquadFilter();
                 filter.type = 'lowpass';
                 filter.frequency.value = 800; // Muffled industrial fan sound
 
-                gainNode = audioCtx.createGain();
-                gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
-                gainNode.gain.linearRampToValueAtTime(0.4, audioCtx.currentTime + 1.2); // Fan "spin up"
+                fanGain = audioCtx.createGain();
+                fanGain.gain.setValueAtTime(0, audioCtx.currentTime);
+                fanGain.gain.linearRampToValueAtTime(0.4 * userFanVol, audioCtx.currentTime + 1.2); // Fan "spin up"
 
-                fanNode.connect(filter);
-                filter.connect(gainNode);
-                gainNode.connect(audioCtx.destination);
+                fanSource.connect(filter);
+                filter.connect(fanGain);
+                fanGain.connect(audioCtx.destination);
 
-                fanNode.start();
+                fanSource.start();
             };
 
             const startDriveWhine = () => {
-                // Create an oscillator for the motor whine
                 const motor = audioCtx.createOscillator();
-                const motorGain = audioCtx.createGain();
+                motorGain = audioCtx.createGain();
 
-                // DSSI drives had a complex harmonic whine. 
-                // We'll use a 'sawtooth' but filter it heavily to get that metallic ring.
                 motor.type = 'sawtooth';
 
-                // The "Spin Up" Frequency Ramp
-                // Starts at a low hum (60Hz) and climbs to a high-pitched 1.2kHz whine
                 motor.frequency.setValueAtTime(60, audioCtx.currentTime);
                 motor.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 3.0);
 
-                // High Resonance Filter to create the "Singing" platter sound
                 const whineFilter = audioCtx.createBiquadFilter();
                 whineFilter.type = 'bandpass';
                 whineFilter.frequency.setValueAtTime(60, audioCtx.currentTime);
                 whineFilter.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 3.0);
-                whineFilter.Q.value = 5; // Higher Q = more "whistle"
+                whineFilter.Q.value = 5;
 
-                // Gain Envelope: Drive starts silent and gets louder as it spins
                 motorGain.gain.setValueAtTime(0, audioCtx.currentTime);
-                motorGain.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + 2.0);
-                motorGain.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 4.0); // Level off
+                motorGain.gain.linearRampToValueAtTime(0.15 * userHdVol, audioCtx.currentTime + 2.0);
+                motorGain.gain.linearRampToValueAtTime(0.1 * userHdVol, audioCtx.currentTime + 4.0);
 
                 motor.connect(whineFilter);
                 whineFilter.connect(motorGain);
                 motorGain.connect(audioCtx.destination);
 
                 motor.start();
+                motorSource = motor;
 
-                // Add a "Seek Click" at the end of spin-up
                 setTimeout(() => {
                     playSeekChirp();
                 }, 3200);
             };
 
             const playSeekChirp = () => {
-                // The sound of the R/W heads unparking
                 const noise = audioCtx.createOscillator();
                 const g = audioCtx.createGain();
                 noise.type = 'triangle';
                 noise.frequency.setValueAtTime(800, audioCtx.currentTime);
                 noise.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.05);
-                g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                g.gain.setValueAtTime(0.2 * userHdVol, audioCtx.currentTime);
                 g.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
                 noise.connect(g);
                 g.connect(audioCtx.destination);
@@ -1835,11 +1925,11 @@
             };
 
             const stopFan = () => {
-                if (gainNode) {
-                    gainNode.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
+                if (fanGain) {
+                    fanGain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1.5);
                     setTimeout(() => {
-                        if (fanNode) {
-                            try { fanNode.stop(); } catch (e) { }
+                        if (fanSource) {
+                            try { fanSource.stop(); } catch (e) { }
                         }
                     }, 1500);
                 }
@@ -1848,13 +1938,65 @@
             return {
                 boot: () => {
                     if (audioCtx.state === 'suspended') audioCtx.resume();
-                    playClick();      // The physical switch
-                    startFan();       // The BA440 air rushing
-                    startDriveWhine(); // The RF72 platters spinning up
+                    playClick();
+                    startFan();
+                    startDriveWhine();
                 },
-                stopFan
+                stopFan,
+                setFanVol: (v) => {
+                    userFanVol = v / 100;
+                    if (fanGain) {
+                        fanGain.gain.setTargetAtTime(0.4 * userFanVol, audioCtx.currentTime, 0.1);
+                    }
+                },
+                setHdVol: (v) => {
+                    userHdVol = v / 100;
+                    if (motorGain) {
+                        motorGain.gain.setTargetAtTime(0.1 * userHdVol, audioCtx.currentTime, 0.1);
+                    }
+                },
+                initiateFade: () => {
+                    // HD fades to 10%
+                    // Fan fades to 20%
+                    const fadeTime = 20;
+                    if (fanGain) {
+                        fanGain.gain.linearRampToValueAtTime(0.4 * 0.2 * userFanVol, audioCtx.currentTime + fadeTime);
+                        // Update UI sliders to match fade
+                        let step = 0;
+                        const interval = setInterval(() => {
+                            step++;
+                            const currentFanVol = 100 - (step * (80 / (fadeTime * 2)));
+                            const currentHdVol = 100 - (step * (90 / (fadeTime * 2)));
+                            document.getElementById('fanSlider').value = currentFanVol;
+                            document.getElementById('hdSlider').value = currentHdVol;
+                            document.getElementById('fanVolLabel').textContent = Math.round(currentFanVol) + '%';
+                            document.getElementById('hdVolLabel').textContent = Math.round(currentHdVol) + '%';
+                            if (step >= fadeTime * 2) {
+                                clearInterval(interval);
+                                // Final snap to be sure
+                                document.getElementById('fanSlider').value = 20;
+                                document.getElementById('hdSlider').value = 10;
+                                document.getElementById('fanVolLabel').textContent = '20%';
+                                document.getElementById('hdVolLabel').textContent = '10%';
+                            }
+                        }, 500);
+                    }
+                    if (motorGain) {
+                        motorGain.gain.linearRampToValueAtTime(0.1 * 0.1 * userHdVol, audioCtx.currentTime + fadeTime);
+                    }
+                }
             };
         })();
+
+        function updateVolume(type, val) {
+            if (type === 'fan') {
+                AudioEngine.setFanVol(val);
+                document.getElementById('fanVolLabel').textContent = val + '%';
+            } else {
+                AudioEngine.setHdVol(val);
+                document.getElementById('hdVolLabel').textContent = val + '%';
+            }
+        }
 
         // Boot system function trigger
         function bootSystem() {
@@ -2195,7 +2337,6 @@
         let activeFaults = []; // can be empty, or contain 'ribbon', 'memory'
 
         function simulateBoot() {
-            AudioEngine.stopFan(); // Fade out fan sound
             stopSim();
             stopVmsIdle();
             setDiagState('running');
@@ -2453,6 +2594,7 @@
                     } else {
                         appendToScreen('\n\n$ ', cursor);
                         startVmsIdle();
+                        AudioEngine.initiateFade(); // Start the 20s fade-out to 10%/20% after login
                     }
                 }
                 vtTimer = setTimeout(typeChar, 380);
